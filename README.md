@@ -180,7 +180,7 @@ Test data is saved to the directory configured in `config.py` (`CSV_DEFAULT_DIR`
 - `NAU7802_GAIN = 128` is fixed throughout calibration and operation — do not modify.
 - `DIO#_EF_ENABLE` is a **boolean** register (0 or 1 only). Mode selection requires writing to `DIO#_EF_INDEX`. Writing a mode index to `ENABLE` silently misbehaves.
 - The T7 connection always uses a direct IP string — do not substitute `"ANY"` as the connection identifier.
-- See https://support.labjack.com/docs/t-series-datasheet for further support on the LabJack T7.
+- See [www.support.labjack.com](https://support.labjack.com/docs/t-series-datasheet) for further support on the LabJack T7.
 
 ---
 
