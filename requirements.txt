@@ -1,0 +1,34 @@
+# ==============================================================================
+# Vehicle Sensor Suite Dashboard — Python Requirements
+# ==============================================================================
+#
+# INSTALLATION (run once on the host PC):
+#
+#   1. Install Python 3.10 or newer from https://www.python.org/downloads/
+#      Check "Add Python to PATH" during installation on Windows.
+#
+#   2. Open a terminal / Command Prompt in this directory and run:
+#        pip install -r requirements.txt
+#
+#   3. Install LabJack LJM Python library:
+#        pip install labjack-ljm
+#      OR download the LJM installer from:
+#        https://labjack.com/pages/support?doc=/software-driver/ljm-software-installers/
+#      The LJM installer includes both the driver and the Python library.
+#
+#   4. Run the dashboard:
+#        python dashboard.py
+#
+# NOTES:
+#   - PyQt6 and pyqtgraph together provide the real-time plotting engine.
+#   - numpy is required for efficient ring buffer operations.
+#   - The labjack-ljm package requires the LabJack LJM C driver to be installed
+#     separately (the pip package is a Python wrapper only).
+#   - Tested on Python 3.10–3.12, Windows 10/11.
+#
+# ==============================================================================
+
+PyQt6>=6.4.0
+pyqtgraph>=0.13.3
+numpy>=1.24.0
+labjack-ljm>=1.23.0
