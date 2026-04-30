@@ -246,7 +246,7 @@ CSV_DEFAULT_DIR = os.path.join(
 )
 
 APP_TITLE   = "Vehicle Sensor Suite"
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.6.2"
 
 
 # ==============================================================================
@@ -286,7 +286,7 @@ SUSPENSION_CHANNELS: List[ChannelConfig] = [
     ChannelConfig(
         key="loadcell_fl", label="Load Cell FL",
         register=SensorTag.NAU7802_BUS0.value, unit="counts",
-        scale=1.0, offset=0.0,    # ADJUST: N/count after calibration
+        scale=1.51514e-05, offset=0.06410689,    # ADJUST: N/count after calibration
         default_display_filter="med_ema",
     ),
     ChannelConfig(
@@ -312,36 +312,42 @@ SUSPENSION_CHANNELS: List[ChannelConfig] = [
         key="imu_accel_x", label="Accel X",
         register=SensorTag.ICM_ACCEL_X.value, unit="g",
         scale=1.0 / 8192.0,       # ADJUST divisor if ICM_ACCEL_RANGE_G changes
+        offset=0.0,
         y_range=(-4, 4),
     ),
     ChannelConfig(
         key="imu_accel_y", label="Accel Y",
         register=SensorTag.ICM_ACCEL_Y.value, unit="g",
         scale=1.0 / 8192.0,
+        offset=0.0,
         y_range=(-4, 4),
     ),
     ChannelConfig(
         key="imu_accel_z", label="Accel Z",
         register=SensorTag.ICM_ACCEL_Z.value, unit="g",
         scale=1.0 / 8192.0,
+        offset=0.0,
         y_range=(-4, 4),
     ),
     ChannelConfig(
         key="imu_gyro_x", label="Gyro X",
         register=SensorTag.ICM_GYRO_X.value, unit="dps",
         scale=1.0 / 65.5,         # ADJUST divisor if ICM_GYRO_RANGE_DPS changes
+        offset=0.0,
         y_range=(-500, 500), enabled_by_default=False,
     ),
     ChannelConfig(
         key="imu_gyro_y", label="Gyro Y",
         register=SensorTag.ICM_GYRO_Y.value, unit="dps",
         scale=1.0 / 65.5,
+        offset=0.0,
         y_range=(-500, 500), enabled_by_default=False,
     ),
     ChannelConfig(
         key="imu_gyro_z", label="Gyro Z",
         register=SensorTag.ICM_GYRO_Z.value, unit="dps",
         scale=1.0 / 65.5,
+        offset=0.0,
         y_range=(-500, 500), enabled_by_default=False,
     ),
 ]
@@ -360,7 +366,7 @@ DRIVETRAIN_CHANNELS: List[ChannelConfig] = [
     ChannelConfig(
         key="rpm", label="Crankshaft RPM",
         register=SensorTag.HALL_RPM.value, unit="RPM",
-        scale=1.0, offset=0.0,
+        scale=1, offset=0,
         y_range=(0, 8000),        # ADJUST: set to engine/motor max RPM
     ),
 ]

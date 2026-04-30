@@ -13,6 +13,22 @@
 # ------------------------------------------------------------------------------
 # CHANGELOG
 # ------------------------------------------------------------------------------
+# v2.6.2 — Calibration persistence: scale/offset saved to svss_engineer.json
+#           (calibration key) on Apply; loaded and applied to ChannelConfig
+#           objects in _load_mode() on every startup — no config.py patching.
+#           Unit selections from Settings now applied to card labels at card
+#           build time in _load_mode(), not only after Settings dialog close.
+# v2.6.1 — Choose button wider (88px); Apply && Close ampersand fix; channel
+#           tables top-justified in Settings and Engineer dialogs;
+#           default engineer password updated
+# v2.6.0 — Settings dialog (General/Units/About tabs); Engineer control panel
+#           (password-protected cal constant editor, writes back to config.py);
+#           unit conversion system (per-channel display unit selector);
+#           svss_settings.json persistence; SHA-256 engineer credentials
+# v2.5.3 — Choose button width 58→72px (full label visible); CSV Acq Filter
+#           default set to Med+EMA on startup; horizontal scrollbar styled to
+#           match vertical (6px, no arrows, theme-aware); crosshair x,y coord
+#           readout TextItem anchored to bottom-left corner of time series plot
 # v2.5.2 — Spinbox up/down arrows visible in both themes (CSS border-triangle)
 # v2.5.1 — Light mode color cycle (COLOR_CYCLE_LIGHT): muted professional tones
 #           replace neon hues on light background; color reassignment on theme
@@ -41,6 +57,14 @@ from __future__ import annotations
 
 import sys
 import os
+import math
+import json
+import hashlib
+import webbrowser
+import re
+import importlib
+from PyQt6.QtWidgets import QDialog, QInputDialog, QDialogButtonBox
+
 import time
 import datetime
 import collections
@@ -402,6 +426,22 @@ QScrollBar::handle:vertical:hover {{
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
 }}
+QScrollBar:horizontal {{
+    background: {t['BG_PANEL']};
+    height: 6px;
+    border-radius: 3px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {t['BORDER_COLOR']};
+    border-radius: 3px;
+    min-width: 20px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {t['TEXT_MUTED']};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
 QLineEdit {{
     background-color: {t['BG_INPUT']};
     border: 1px solid {t['BORDER_COLOR']};
@@ -493,6 +533,217 @@ pg.setConfigOptions(
     foreground=DARK["TEXT_LABEL"],
     useOpenGL=False,  # Set True if GPU acceleration is available
 )
+
+# ==============================================================================
+# GITHUB LINKS
+# ==============================================================================
+GITHUB_README_URL   = "https://github.com/SethRobertson71/sau_daq_dashboard/blob/main/README.md"
+GITHUB_CAL_HELP_URL = "https://github.com/SethRobertson71/sau_daq_dashboard/blob/main/CALIBRATION.md"
+
+# ==============================================================================
+# SETTINGS / CREDENTIALS PATHS (next to dashboard.py)
+# ==============================================================================
+_SCRIPT_DIR           = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE         = os.path.join(_SCRIPT_DIR, "svss_settings.json")
+ENGINEER_CREDS_FILE   = os.path.join(_SCRIPT_DIR, "svss_engineer.json")
+DEFAULT_ENGINEER_PASSWORD = "baja2026"
+_CONFIG_PATH          = os.path.join(_SCRIPT_DIR, "config.py")
+
+# ==============================================================================
+# UNIT CONVERSION SYSTEM
+# Canonical base units: lbf | mm | m/s² | deg/s | RPM | counts | deg/s
+# All multipliers convert base → target.
+# ==============================================================================
+UNIT_CONVERSIONS: dict = {
+    "load_cell":    {"lbf": 1.0, "N": 4.44822},
+    "potentiometer":{"mm": 1.0, "cm": 0.1, "in": 0.039370, "ft": 0.003281},
+    "accel":        {"m/s²": 1.0, "ft/s²": 3.28084},
+    "gyro":         {"deg/s": 1.0, "rad/s": math.pi / 180.0},
+    "rpm":          {"RPM": 1.0, "Hz": 1.0 / 60.0},
+    "enc_angle":    {"counts": 1.0, "degrees": 1.0, "radians": math.pi / 180.0},
+    "enc_velocity": {"deg/s": 1.0, "rad/s": math.pi / 180.0},
+}
+# SensorTag.value → family
+CHANNEL_UNIT_FAMILY: dict = {
+    0: "potentiometer", 1: "potentiometer", 2: "potentiometer", 3: "potentiometer",
+    10: "load_cell", 11: "load_cell", 12: "load_cell", 13: "load_cell",
+    20: "accel", 21: "accel", 22: "accel",
+    23: "gyro",  24: "gyro",  25: "gyro",
+    30: "rpm",
+    31: "enc_angle", 32: "enc_angle", 33: "enc_velocity",
+}
+
+def get_unit_options(sensor_tag_value: int) -> list:
+    family = CHANNEL_UNIT_FAMILY.get(sensor_tag_value)
+    return list(UNIT_CONVERSIONS[family].keys()) if family else []
+
+def get_unit_multiplier(from_unit: str, to_unit: str, sensor_tag_value: int) -> float:
+    # Return multiplier to convert a displayed value from from_unit to to_unit.
+    family = CHANNEL_UNIT_FAMILY.get(sensor_tag_value)
+    if not family:
+        return 1.0
+    conv = UNIT_CONVERSIONS.get(family, {})
+    f = conv.get(from_unit, 1.0)
+    t = conv.get(to_unit, 1.0)
+    return (t / f) if f != 0.0 else 1.0
+
+# ==============================================================================
+# SETTINGS PERSISTENCE
+# ==============================================================================
+_DEFAULT_SETTINGS = {"ip_address": "192.168.1.10", "csv_dir": "", "channel_units": {}}
+
+def load_settings() -> dict:
+    if os.path.isfile(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                data = json.load(f)
+            for k, v in _DEFAULT_SETTINGS.items():
+                data.setdefault(k, v)
+            return data
+        except Exception:
+            pass
+    return _DEFAULT_SETTINGS.copy()
+
+def save_settings(settings: dict):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        print(f"[SVSS] Warning: could not save settings: {e}")
+
+# ==============================================================================
+# ENGINEER CREDENTIALS + CALIBRATION OVERRIDES  (svss_engineer.json)
+#
+# JSON structure:
+#   {
+#     "password_hash": "<sha256>",
+#     "calibration": {
+#       "<channel_key>": {"scale": <float>, "offset": <float>},
+#       ...
+#     }
+#   }
+#
+# Calibration overrides are applied on top of ChannelConfig defaults every
+# time _load_mode() runs.  Written immediately on Apply in Engineer panel.
+# ==============================================================================
+def _hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+
+def _load_engineer_json() -> dict:
+    """Return the full svss_engineer.json dict, or a safe default."""
+    if os.path.isfile(ENGINEER_CREDS_FILE):
+        try:
+            with open(ENGINEER_CREDS_FILE, "r") as f:
+                data = json.load(f)
+            data.setdefault("password_hash", _hash_pw(DEFAULT_ENGINEER_PASSWORD))
+            data.setdefault("calibration", {})
+            return data
+        except Exception:
+            pass
+    return {"password_hash": _hash_pw(DEFAULT_ENGINEER_PASSWORD), "calibration": {}}
+
+def _save_engineer_json(data: dict):
+    try:
+        with open(ENGINEER_CREDS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[SVSS] Warning: could not save engineer file: {e}")
+
+def load_engineer_hash() -> str:
+    return _load_engineer_json().get("password_hash", _hash_pw(DEFAULT_ENGINEER_PASSWORD))
+
+def _save_engineer_hash(hashed: str):
+    data = _load_engineer_json()
+    data["password_hash"] = hashed
+    _save_engineer_json(data)
+
+def check_engineer_password(pw: str) -> bool:
+    return _hash_pw(pw) == load_engineer_hash()
+
+def change_engineer_password(new_pw: str):
+    _save_engineer_hash(_hash_pw(new_pw))
+
+def load_calibration_overrides() -> dict:
+    """Return {channel_key: {"scale": float, "offset": float}} from JSON."""
+    return _load_engineer_json().get("calibration", {})
+
+def save_calibration_override(channel_key: str, scale: float, offset: float):
+    """Persist one channel's calibration into svss_engineer.json immediately."""
+    data = _load_engineer_json()
+    data["calibration"][channel_key] = {"scale": scale, "offset": offset}
+    _save_engineer_json(data)
+
+# ==============================================================================
+# CONFIG.PY PATCH WRITER
+# Rewrites scale= and offset= inside the matching ChannelConfig(...) block.
+# Creates a .bak backup before writing.
+# ==============================================================================
+def patch_config_channel(config_path: str, channel_key: str,
+                          new_scale: float, new_offset: float) -> bool:
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"[patch_config] Cannot read {config_path}: {e}")
+        return False
+
+    key_pat    = re.compile(rf'key\s*=\s*["\']({re.escape(channel_key)})["\']')
+    scale_pat  = re.compile(r'(scale\s*=\s*)([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)')
+    offset_pat = re.compile(r'(offset\s*=\s*)([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)')
+
+    # Find the ChannelConfig( block containing key="channel_key"
+    block_lines = []
+    i = 0
+    while i < len(lines):
+        if "ChannelConfig(" in lines[i]:
+            depth = 0
+            block = []
+            j = i
+            while j < len(lines):
+                block.append((j, lines[j]))
+                depth += lines[j].count("(") - lines[j].count(")")
+                if depth <= 0:
+                    break
+                j += 1
+            if key_pat.search("".join(l for _, l in block)):
+                block_lines = block
+                break
+            i = j + 1
+        else:
+            i += 1
+
+    if not block_lines:
+        print(f"[patch_config] Block for key='{channel_key}' not found.")
+        return False
+
+    scale_written = offset_written = False
+    for idx, (line_num, line_text) in enumerate(block_lines):
+        new_line = line_text
+        if not scale_written and scale_pat.search(new_line):
+            new_line = scale_pat.sub(lambda m: f"{m.group(1)}{new_scale:.10g}", new_line)
+            scale_written = True
+        if not offset_written and offset_pat.search(new_line):
+            new_line = offset_pat.sub(lambda m: f"{m.group(1)}{new_offset:.10g}", new_line)
+            offset_written = True
+        block_lines[idx] = (line_num, new_line)
+
+    if not (scale_written and offset_written):
+        print(f"[patch_config] scale/offset patterns not found for key='{channel_key}'.")
+        return False
+
+    for line_num, new_text in block_lines:
+        lines[line_num] = new_text
+
+    bak = config_path + ".bak"
+    try:
+        with open(bak, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(bak, config_path)
+        return True
+    except Exception as e:
+        print(f"[patch_config] Write failed: {e}")
+        return False
+
 
 
 # ==============================================================================
@@ -794,6 +1045,350 @@ class ChannelValueCard(QFrame):
             )
 
 
+
+# ==============================================================================
+# SETTINGS DIALOG
+# ==============================================================================
+class SettingsDialog(QDialog):
+    """User-accessible settings: Default IP, CSV dir, per-channel units, About."""
+
+    def __init__(self, settings: dict, all_channels: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setMinimumSize(540, 460)
+        self.setModal(True)
+        self._settings = dict(settings)
+        self._all_channels = all_channels
+        self._unit_combos: Dict[str, QComboBox] = {}
+        self.setStyleSheet(build_stylesheet(_CURRENT_THEME))
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 12)
+        root.setSpacing(12)
+        tabs = QTabWidget()
+
+        # ── Tab 1: General ────────────────────────────────────────────────────
+        gen_tab = QWidget()
+        gen_lay = QVBoxLayout(gen_tab)
+        gen_lay.setSpacing(14)
+        gen_lay.setContentsMargins(12, 16, 12, 8)
+
+        ip_grp = QGroupBox("LabJack T7 Connection")
+        ip_lay = QGridLayout(ip_grp)
+        ip_lay.setColumnStretch(1, 1)
+        ip_lay.addWidget(QLabel("Default IP Address:"), 0, 0)
+        self._ip_edit = QLineEdit()
+        self._ip_edit.setPlaceholderText("192.168.1.10")
+        stored_ip = self._settings.get("ip_address", "192.168.1.10")
+        if stored_ip and stored_ip != "192.168.1.10":
+            self._ip_edit.setText(stored_ip)
+        ip_tip = QLabel("Leave blank to use default  192.168.1.10")
+        ip_tip.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
+        ip_lay.addWidget(self._ip_edit, 0, 1)
+        ip_lay.addWidget(ip_tip, 1, 1)
+        gen_lay.addWidget(ip_grp)
+
+        csv_grp = QGroupBox("CSV Recording")
+        csv_lay = QHBoxLayout(csv_grp)
+        self._csv_edit = QLineEdit(self._settings.get("csv_dir", ""))
+        self._csv_edit.setPlaceholderText("Default save directory…")
+        btn_csv = QPushButton("Browse…")
+        btn_csv.setFixedWidth(80)
+        btn_csv.clicked.connect(self._browse_csv)
+        csv_lay.addWidget(self._csv_edit, stretch=1)
+        csv_lay.addWidget(btn_csv)
+        gen_lay.addWidget(csv_grp)
+        gen_lay.addStretch()
+        tabs.addTab(gen_tab, "General")
+
+        # ── Tab 2: Units ──────────────────────────────────────────────────────
+        units_tab = QWidget()
+        units_outer = QVBoxLayout(units_tab)
+        units_outer.setContentsMargins(0, 0, 0, 0)
+        units_scroll = QScrollArea()
+        units_scroll.setWidgetResizable(True)
+        units_inner = QWidget()
+        units_inner_lay = QVBoxLayout(units_inner)
+        units_inner_lay.setContentsMargins(0, 0, 0, 0)
+        units_inner_lay.setSpacing(0)
+        ugrid_widget = QWidget()
+        ugrid = QGridLayout(ugrid_widget)
+        ugrid.setSpacing(6)
+        ugrid.setContentsMargins(12, 12, 12, 12)
+        ugrid.setColumnStretch(0, 2)
+        ugrid.setColumnStretch(1, 2)
+        ugrid.setColumnStretch(2, 2)
+
+        for col, hdr_txt in enumerate(["Channel", "Sensor Type", "Display Unit"]):
+            h = QLabel(hdr_txt)
+            h.setStyleSheet(
+                f"color: {TEXT_MUTED}; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
+            ugrid.addWidget(h, 0, col)
+
+        urow = 1
+        for ch in all_channels:
+            if ch.is_timestamp:
+                continue
+            opts = get_unit_options(ch.register)
+            if not opts:
+                continue
+            family = CHANNEL_UNIT_FAMILY.get(ch.register, "")
+            n_lbl = QLabel(ch.label)
+            n_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
+            f_lbl = QLabel(family.replace("_", " ").title())
+            f_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+            combo = QComboBox()
+            combo.addItems(opts)
+            saved = self._settings.get("channel_units", {}).get(ch.key, ch.unit)
+            if saved in opts:
+                combo.setCurrentText(saved)
+            ugrid.addWidget(n_lbl,  urow, 0)
+            ugrid.addWidget(f_lbl,  urow, 1)
+            ugrid.addWidget(combo,  urow, 2)
+            self._unit_combos[ch.key] = combo
+            urow += 1
+
+        units_inner_lay.addWidget(ugrid_widget)
+        units_inner_lay.addStretch()
+        units_scroll.setWidget(units_inner)
+        units_outer.addWidget(units_scroll)
+        tabs.addTab(units_tab, "Units")
+
+        # ── Tab 3: About ──────────────────────────────────────────────────────
+        about_tab = QWidget()
+        alay = QVBoxLayout(about_tab)
+        alay.setContentsMargins(24, 24, 24, 24)
+        alay.setSpacing(10)
+        t = QLabel(APP_TITLE)
+        t.setStyleSheet(
+            f"color: {ACCENT}; font-size: 20px; font-weight: 700; letter-spacing: 2px;")
+        v = QLabel(f"Version {APP_VERSION}")
+        v.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
+        d = QLabel(
+            "Multi-mode vehicle dynamics sensor acquisition dashboard.\n"
+            "Built on PyQt6 · pyqtgraph · LabJack LJM.")
+        d.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
+        d.setWordWrap(True)
+        btn_rm = QPushButton("📖  Open README on GitHub")
+        btn_rm.clicked.connect(lambda: webbrowser.open(GITHUB_README_URL))
+        btn_rm.setStyleSheet(
+            f"QPushButton {{ border:1px solid {ACCENT}; color:{ACCENT}; "
+            f"background:transparent; padding:6px 14px; border-radius:5px; }}"
+            f"QPushButton:hover {{ background:{BG_WIDGET}; }}")
+        alay.addWidget(t)
+        alay.addWidget(v)
+        alay.addSpacing(8)
+        alay.addWidget(d)
+        alay.addSpacing(12)
+        alay.addWidget(btn_rm)
+        alay.addStretch()
+        tabs.addTab(about_tab, "About")
+
+        root.addWidget(tabs)
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_ok = QPushButton("Apply && Close")
+        btn_ok.setStyleSheet(
+            f"QPushButton {{ border:2px solid {ACCENT}; color:{ACCENT}; "
+            f"font-weight:700; padding:7px 20px; border-radius:5px; }}"
+            f"QPushButton:hover {{ background:{BG_WIDGET}; }}")
+        btn_cancel.clicked.connect(self.reject)
+        btn_ok.clicked.connect(self._on_accept)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        root.addLayout(btn_row)
+
+    def _browse_csv(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "Select Default CSV Directory", self._csv_edit.text())
+        if d:
+            self._csv_edit.setText(d)
+
+    def _on_accept(self):
+        ip = self._ip_edit.text().strip() or "192.168.1.10"
+        self._settings["ip_address"] = ip
+        self._settings["csv_dir"]    = self._csv_edit.text().strip()
+        self._settings["channel_units"] = {
+            k: c.currentText() for k, c in self._unit_combos.items()
+        }
+        self.accept()
+
+    def get_settings(self) -> dict:
+        return self._settings
+
+
+
+# ==============================================================================
+# ENGINEER CONTROL PANEL DIALOG
+# ==============================================================================
+class EngineerDialog(QDialog):
+    """Password-protected calibration constant editor. Writes back to config.py."""
+
+    def __init__(self, all_channels: list, config_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("⚙  Engineer Control Panel")
+        self.setMinimumSize(740, 540)
+        self.setModal(True)
+        self._config_path = config_path
+        self._row_w: Dict[str, dict] = {}
+        self.setStyleSheet(build_stylesheet(_CURRENT_THEME))
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 12)
+        root.setSpacing(10)
+
+        warn = QLabel(
+            "⚠  Changes are saved to svss_engineer.json and applied on next startup.  "
+            "In-memory values update immediately — restart the stream for the "
+            "acquisition layer to pick up new calibration constants.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(
+            f"color:{WARNING}; background:{BG_WIDGET}; border:1px solid {WARNING}; "
+            f"border-radius:5px; padding:8px; font-size:11px;")
+        root.addWidget(warn)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        tbl_outer = QWidget()
+        tbl_outer_lay = QVBoxLayout(tbl_outer)
+        tbl_outer_lay.setContentsMargins(0, 0, 0, 0)
+        tbl_outer_lay.setSpacing(0)
+        tbl = QWidget()
+        grid = QGridLayout(tbl)
+        grid.setSpacing(6)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 3)
+        grid.setColumnStretch(2, 3)
+        grid.setColumnStretch(3, 1)
+        grid.setColumnStretch(4, 2)
+
+        for col, hdr_txt in enumerate(["Channel", "Scale", "Offset", "", "Status"]):
+            h = QLabel(hdr_txt)
+            h.setStyleSheet(
+                f"color:{TEXT_MUTED}; font-size:10px; font-weight:700; letter-spacing:1px;")
+            grid.addWidget(h, 0, col)
+
+        row = 1
+        for ch in all_channels:
+            if ch.is_timestamp:
+                continue
+            # Name + unit sub-label
+            name_w = QWidget()
+            nlay = QVBoxLayout(name_w)
+            nlay.setSpacing(0)
+            nlay.setContentsMargins(0, 0, 0, 0)
+            nl = QLabel(ch.label)
+            nl.setStyleSheet(
+                f"color:{TEXT_PRIMARY}; font-size:12px; font-weight:600;")
+            ul = QLabel(f"key: {ch.key}  |  unit: {ch.unit}")
+            ul.setStyleSheet(f"color:{TEXT_MUTED}; font-size:9px;")
+            nlay.addWidget(nl)
+            nlay.addWidget(ul)
+
+            sc = QDoubleSpinBox()
+            sc.setDecimals(10)
+            sc.setRange(-1e9, 1e9)
+            sc.setSingleStep(1e-6)
+            sc.setValue(ch.scale)
+            sc.setToolTip(f"Scale factor\nphysical = raw × scale + offset")
+
+            of = QDoubleSpinBox()
+            of.setDecimals(10)
+            of.setRange(-1e9, 1e9)
+            of.setSingleStep(1e-4)
+            of.setValue(ch.offset)
+            of.setToolTip(f"Offset\nphysical = raw × scale + offset")
+
+            ab = QPushButton("Apply")
+            ab.setFixedWidth(68)
+            ab.setStyleSheet(
+                f"QPushButton {{ border:1px solid {ACCENT}; color:{ACCENT}; "
+                f"background:transparent; padding:4px 8px; border-radius:4px; }}"
+                f"QPushButton:hover {{ background:{BG_WIDGET}; }}")
+
+            st = QLabel("")
+            st.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+
+            self._row_w[ch.key] = {"scale": sc, "offset": of,
+                                    "status": st, "channel": ch}
+            ab.clicked.connect(lambda checked, k=ch.key: self._apply_ch(k))
+
+            grid.addWidget(name_w, row, 0)
+            grid.addWidget(sc,     row, 1)
+            grid.addWidget(of,     row, 2)
+            grid.addWidget(ab,     row, 3)
+            grid.addWidget(st,     row, 4)
+            row += 1
+
+        tbl_outer_lay.addWidget(tbl)
+        tbl_outer_lay.addStretch()
+        scroll.setWidget(tbl_outer)
+        root.addWidget(scroll, stretch=1)
+
+        bot = QHBoxLayout()
+        btn_pw = QPushButton("🔑  Change Password")
+        btn_pw.clicked.connect(self._change_pw)
+        btn_help = QPushButton("📋  Calibration Help (GitHub)")
+        btn_help.clicked.connect(lambda: webbrowser.open(GITHUB_CAL_HELP_URL))
+        btn_help.setStyleSheet(
+            f"QPushButton {{ border:1px solid {ACCENT}; color:{ACCENT}; "
+            f"background:transparent; padding:6px 14px; border-radius:5px; }}"
+            f"QPushButton:hover {{ background:{BG_WIDGET}; }}")
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        bot.addWidget(btn_pw)
+        bot.addWidget(btn_help)
+        bot.addStretch()
+        bot.addWidget(btn_close)
+        root.addLayout(bot)
+
+    def _apply_ch(self, key: str):
+        w  = self._row_w[key]
+        ch = w["channel"]
+        new_scale  = w["scale"].value()
+        new_offset = w["offset"].value()
+        # Apply in-memory immediately so current stream picks up the values
+        ch.scale  = new_scale
+        ch.offset = new_offset
+        # Persist to svss_engineer.json — loaded and re-applied on next startup
+        try:
+            save_calibration_override(key, new_scale, new_offset)
+            w["status"].setText("✓ Saved")
+            w["status"].setStyleSheet(
+                f"color:{SUCCESS}; font-size:11px; font-weight:700;")
+        except Exception as e:
+            w["status"].setText("✗ Failed — check console")
+            w["status"].setStyleSheet(
+                f"color:{DANGER}; font-size:11px; font-weight:700;")
+            print(f"[Engineer] save_calibration_override failed for '{key}': {e}")
+
+    def _change_pw(self):
+        old, ok = QInputDialog.getText(
+            self, "Change Password", "Current password:",
+            QLineEdit.EchoMode.Password)
+        if not ok or not old:
+            return
+        if not check_engineer_password(old):
+            QMessageBox.warning(self, "Change Password", "Incorrect current password.")
+            return
+        new, ok = QInputDialog.getText(
+            self, "Change Password", "New password:",
+            QLineEdit.EchoMode.Password)
+        if not ok or not new:
+            return
+        confirm, ok = QInputDialog.getText(
+            self, "Change Password", "Confirm new password:",
+            QLineEdit.EchoMode.Password)
+        if not ok or new != confirm:
+            QMessageBox.warning(self, "Change Password", "Passwords do not match.")
+            return
+        change_engineer_password(new)
+        QMessageBox.information(self, "Change Password",
+                                "Password changed successfully.")
+
 # ==============================================================================
 # MULTI-CHANNEL PLOT WIDGET
 # One pyqtgraph PlotWidget with per-channel curves, legend, and cross-plot
@@ -878,6 +1473,14 @@ class MultiChannelPlot(QWidget):
         self._plot_widget.addItem(self._vline, ignoreBounds=True)
         self._plot_widget.addItem(self._hline, ignoreBounds=True)
         self._plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
+        # Coordinate readout anchored to bottom-left of plot viewport
+        self._coord_label = pg.TextItem(
+            text="", anchor=(0, 1), color=TEXT_MUTED,
+        )
+        self._coord_label.setFont(QFont(FONT_MONO, 8))
+        self._plot_widget.addItem(self._coord_label, ignoreBounds=True)
+        self._coord_label.setZValue(100)
 
         layout.addLayout(toolbar)
         layout.addWidget(self._plot_widget)
@@ -969,6 +1572,11 @@ class MultiChannelPlot(QWidget):
             mp = self._plot_widget.getPlotItem().vb.mapSceneToView(pos)
             self._vline.setPos(mp.x())
             self._hline.setPos(mp.y())
+            # Reposition label at bottom-left corner of current view
+            vb = self._plot_widget.getPlotItem().vb
+            xr, yr = vb.viewRange()
+            self._coord_label.setPos(xr[0], yr[0])
+            self._coord_label.setText(f"  x: {mp.x():.4g}  y: {mp.y():.4g}")
 
 
 # ==============================================================================
@@ -1204,6 +1812,12 @@ class MainWindow(QMainWindow):
         self._frame_count = 0
         self._session_start: Optional[float] = None
 
+        # Settings persistence
+        self._settings: dict = load_settings()
+        # Per-channel unit multipliers — applied in display layer on top of
+        # acquisition values.  key → float multiplier (default 1.0)
+        self._unit_multipliers: Dict[str, float] = {}
+
         # Acquisition filter state — set by sidebar filter controls
         self._acq_filter_profile:    FilterProfile = FilterProfile.NONE
         self._acq_filter_n:          int   = 5
@@ -1302,6 +1916,22 @@ class MainWindow(QMainWindow):
         theme_row.addStretch()
         sb_layout.addLayout(theme_row)
 
+        # Settings + Engineer buttons
+        cfg_row = QHBoxLayout()
+        cfg_row.setSpacing(6)
+        btn_settings = QPushButton("⚙  Settings")
+        btn_settings.setFixedHeight(26)
+        btn_settings.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        btn_settings.clicked.connect(self._open_settings)
+        btn_engineer = QPushButton("🔬  Engineer")
+        btn_engineer.setFixedHeight(26)
+        btn_engineer.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        btn_engineer.clicked.connect(self._open_engineer)
+        cfg_row.addWidget(btn_settings)
+        cfg_row.addWidget(btn_engineer)
+        cfg_row.addStretch()
+        sb_layout.addLayout(cfg_row)
+
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {BORDER_COLOR};")
@@ -1322,7 +1952,8 @@ class MainWindow(QMainWindow):
         conn_layout = QGridLayout(conn_grp)
         conn_layout.setColumnStretch(1, 1)
         conn_layout.addWidget(QLabel("IP Address:"), 0, 0)
-        self._ip_edit = QLineEdit(T7_IP_ADDRESS)
+        _settings_ip = self._settings.get('ip_address', T7_IP_ADDRESS) or T7_IP_ADDRESS
+        self._ip_edit = QLineEdit(_settings_ip)
         conn_layout.addWidget(self._ip_edit, 0, 1)
         conn_layout.addWidget(QLabel("Interface:"), 1, 0)
         self._conn_combo = QComboBox()
@@ -1367,6 +1998,7 @@ class MainWindow(QMainWindow):
             "For display-only smoothing use the card filter dropdown."
         )
         self._filt_combo.currentIndexChanged.connect(self._on_filt_profile_changed)
+        self._filt_combo.setCurrentIndex(2)   # default: Med+EMA
         filt_layout.addWidget(self._filt_combo, 0, 1)
 
         lbl_n = QLabel("Window N:")
@@ -1422,11 +2054,12 @@ class MainWindow(QMainWindow):
         rec_grp = QGroupBox("CSV Recording")
         rec_layout = QVBoxLayout(rec_grp)
         path_row = QHBoxLayout()
-        self._path_edit = QLineEdit(CSV_DEFAULT_DIR)
+        _settings_csv = self._settings.get('csv_dir', '') or CSV_DEFAULT_DIR
+        self._path_edit = QLineEdit(_settings_csv)
         self._path_edit.setPlaceholderText("Output directory...")
         self._path_edit.setMaximumWidth(140)
         btn_browse = QPushButton("Choose")
-        btn_browse.setFixedWidth(58)
+        btn_browse.setFixedWidth(88)
         btn_browse.clicked.connect(self._browse_output)
         path_row.addWidget(self._path_edit, stretch=1)
         path_row.addWidget(btn_browse)
@@ -1545,6 +2178,26 @@ class MainWindow(QMainWindow):
 
         self._all_channels = channels
 
+        # Apply persisted calibration overrides from svss_engineer.json
+        # on top of ChannelConfig defaults (which come from config.py at import).
+        cal_overrides = load_calibration_overrides()
+        for ch in channels:
+            if ch.is_timestamp:
+                continue
+            if ch.key in cal_overrides:
+                ch.scale  = cal_overrides[ch.key]["scale"]
+                ch.offset = cal_overrides[ch.key]["offset"]
+
+        # Apply per-channel unit multipliers from settings
+        self._unit_multipliers = {}
+        saved_units = self._settings.get("channel_units", {})
+        for ch in channels:
+            if ch.is_timestamp:
+                continue
+            target_unit = saved_units.get(ch.key, ch.unit)
+            mult = get_unit_multiplier(ch.unit, target_unit, ch.register)
+            self._unit_multipliers[ch.key] = mult
+
         # Rebuild value cards
         for card in self._value_cards.values():
             card.deleteLater()
@@ -1559,6 +2212,10 @@ class MainWindow(QMainWindow):
             if ch.enabled_by_default:
                 color = self._channel_colors.get(ch.key, ACCENT)
                 card = ChannelValueCard(ch, color)
+                # Apply saved display unit label immediately at card creation
+                target_unit = saved_units.get(ch.key, ch.unit)
+                if target_unit != ch.unit:
+                    card.unit_label.setText(target_unit)
                 self._value_cards[ch.key] = card
                 self._cards_layout.addWidget(card)
         self._cards_layout.addStretch()
@@ -1620,7 +2277,10 @@ class MainWindow(QMainWindow):
             return
 
         # Validate IP
+        # Fall back to settings IP if field is blank
         ip = self._ip_edit.text().strip()
+        if not ip:
+            ip = self._settings.get("ip_address", "").strip() or ""
         if not ip:
             QMessageBox.warning(self, "Configuration",
                                 "Please enter the T7 IP address.")
@@ -1943,7 +2603,10 @@ class MainWindow(QMainWindow):
             display_values: Dict[str, float] = {}
             for key, card in self._value_cards.items():
                 if key in frame.values:
-                    display_values[key] = card.update_value(frame.values[key])
+                    raw_val = frame.values[key]
+                    # Apply display-layer unit conversion multiplier
+                    mult = self._unit_multipliers.get(key, 1.0)
+                    display_values[key] = card.update_value(raw_val * mult)
 
             # Plot frame uses display-filtered, zero-offset values so the
             # plot stays in sync with what the cards are showing.
@@ -1987,6 +2650,70 @@ class MainWindow(QMainWindow):
                     f"color: {DANGER}; font-size: 11px; font-weight: 700;")
             else:
                 self._rate_lbl.setText("")
+
+
+    # --------------------------------------------------------------------------
+    # Settings Dialog
+    # --------------------------------------------------------------------------
+    def _open_settings(self):
+        """Open the Settings dialog; apply accepted changes to the UI."""
+        dlg = SettingsDialog(
+            settings=self._settings,
+            all_channels=self._all_channels,
+            parent=self,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_settings = dlg.get_settings()
+            self._settings = new_settings
+            save_settings(new_settings)
+
+            # Update IP field
+            new_ip = new_settings.get("ip_address", T7_IP_ADDRESS) or T7_IP_ADDRESS
+            self._ip_edit.setText(new_ip)
+
+            # Update CSV dir field
+            new_csv = new_settings.get("csv_dir", "")
+            if new_csv:
+                self._path_edit.setText(new_csv)
+
+            # Recompute unit multipliers for the current mode
+            saved_units = new_settings.get("channel_units", {})
+            self._unit_multipliers = {}
+            for ch in self._all_channels:
+                if ch.is_timestamp:
+                    continue
+                target = saved_units.get(ch.key, ch.unit)
+                self._unit_multipliers[ch.key] = get_unit_multiplier(
+                    ch.unit, target, ch.register
+                )
+            # Update unit labels on live cards
+            for ch in self._all_channels:
+                if ch.is_timestamp or ch.key not in self._value_cards:
+                    continue
+                target = saved_units.get(ch.key, ch.unit)
+                self._value_cards[ch.key].unit_label.setText(target)
+
+    # --------------------------------------------------------------------------
+    # Engineer Panel
+    # --------------------------------------------------------------------------
+    def _open_engineer(self):
+        """Prompt for password; if correct, open the Engineer Control Panel."""
+        pw, ok = QInputDialog.getText(
+            self, "Engineer Access", "Enter engineer password:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return
+        if not check_engineer_password(pw):
+            QMessageBox.warning(self, "Access Denied",
+                                "Incorrect password.  Access denied.")
+            return
+        dlg = EngineerDialog(
+            all_channels=self._all_channels,
+            config_path=_CONFIG_PATH,
+            parent=self,
+        )
+        dlg.exec()
 
     # --------------------------------------------------------------------------
     # Cleanup on close
