@@ -1,0 +1,8 @@
+{
+  "ip_address": "192.168.1.10",
+  "csv_dir": "",
+  "channel_units": {
+    "loadcell_fl": "lbf",
+    "rpm": "RPM"
+  }
+}
