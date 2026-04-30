@@ -1,0 +1,9 @@
+{
+  "password_hash": "4640f62e5cbceee573cf2266afba263f81fe10cba60c563435cbf09aeec744f9",
+  "calibration": {
+    "loadcell_fl": {
+      "scale": 1.51514e-05,
+      "offset": 0.06410689
+    }
+  }
+}
