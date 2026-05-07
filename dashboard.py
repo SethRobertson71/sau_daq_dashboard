@@ -1,6 +1,6 @@
 # ==============================================================================
 # dashboard.py — Main Application Entry Point
-# Vehicle Sensor Suite Dashboard
+# Baja Vehicle Test Dashboard
 # ==============================================================================
 #
 # USAGE:
@@ -13,8 +13,15 @@
 # ------------------------------------------------------------------------------
 # CHANGELOG
 # ------------------------------------------------------------------------------
-# v2.6.2 — Calibration persistence: scale/offset saved to svss_engineer.json
-#           (calibration key) on Apply; loaded and applied to ChannelConfig
+# v2.6.3 — Rebranded throughout: application title, sidebar label, window
+#           title, About tab, CSV data log header, and all console prefixes
+#           updated from "Vehicle Sensor Suite" / "[SVSS]" to
+#           "Baja Vehicle Test Dashboard" / "[BajaVTD]"; Engineer dialog title
+#           updated to "Baja VTD — Engineer Control Panel";
+#           app.setOrganizationName("") added in main(); CSV default directory
+#           renamed BajaVehicleTestData.
+# v2.6.2 — Calibration persistence: scale/offset saved to engineer credentials
+#           file (calibration key) on Apply; loaded and applied to ChannelConfig
 #           objects in _load_mode() on every startup — no config.py patching.
 #           Unit selections from Settings now applied to card labels at card
 #           build time in _load_mode(), not only after Settings dialog close.
@@ -24,7 +31,7 @@
 # v2.6.0 — Settings dialog (General/Units/About tabs); Engineer control panel
 #           (password-protected cal constant editor, writes back to config.py);
 #           unit conversion system (per-channel display unit selector);
-#           svss_settings.json persistence; SHA-256 engineer credentials
+#           settings persistence; SHA-256 engineer credentials
 # v2.5.3 — Choose button width 58→72px (full label visible); CSV Acq Filter
 #           default set to Med+EMA on startup; horizontal scrollbar styled to
 #           match vertical (6px, no arrows, theme-aware); crosshair x,y coord
@@ -609,7 +616,7 @@ def save_settings(settings: dict):
         with open(SETTINGS_FILE, "w") as f:
             json.dump(settings, f, indent=2)
     except Exception as e:
-        print(f"[SVSS] Warning: could not save settings: {e}")
+        print(f"[BajaVTD] Warning: could not save settings: {e}")
 
 # ==============================================================================
 # ENGINEER CREDENTIALS + CALIBRATION OVERRIDES  (svss_engineer.json)
@@ -630,7 +637,7 @@ def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
 
 def _load_engineer_json() -> dict:
-    """Return the full svss_engineer.json dict, or a safe default."""
+    """Return the full engineer credentials dict, or a safe default."""
     if os.path.isfile(ENGINEER_CREDS_FILE):
         try:
             with open(ENGINEER_CREDS_FILE, "r") as f:
@@ -647,7 +654,7 @@ def _save_engineer_json(data: dict):
         with open(ENGINEER_CREDS_FILE, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"[SVSS] Warning: could not save engineer file: {e}")
+        print(f"[BajaVTD] Warning: could not save engineer file: {e}")
 
 def load_engineer_hash() -> str:
     return _load_engineer_json().get("password_hash", _hash_pw(DEFAULT_ENGINEER_PASSWORD))
@@ -668,7 +675,7 @@ def load_calibration_overrides() -> dict:
     return _load_engineer_json().get("calibration", {})
 
 def save_calibration_override(channel_key: str, scale: float, offset: float):
-    """Persist one channel's calibration into svss_engineer.json immediately."""
+    """Persist one channel's calibration into the engineer credentials file immediately."""
     data = _load_engineer_json()
     data["calibration"][channel_key] = {"scale": scale, "offset": offset}
     _save_engineer_json(data)
@@ -1228,7 +1235,7 @@ class EngineerDialog(QDialog):
 
     def __init__(self, all_channels: list, config_path: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("⚙  Engineer Control Panel")
+        self.setWindowTitle("⚙  Baja VTD — Engineer Control Panel")
         self.setMinimumSize(740, 540)
         self.setModal(True)
         self._config_path = config_path
@@ -1240,7 +1247,7 @@ class EngineerDialog(QDialog):
         root.setSpacing(10)
 
         warn = QLabel(
-            "⚠  Changes are saved to svss_engineer.json and applied on next startup.  "
+            "⚠  Changes are saved to the engineer credentials file and applied on next startup.  "
             "In-memory values update immediately — restart the stream for the "
             "acquisition layer to pick up new calibration constants.")
         warn.setWordWrap(True)
@@ -1353,7 +1360,7 @@ class EngineerDialog(QDialog):
         # Apply in-memory immediately so current stream picks up the values
         ch.scale  = new_scale
         ch.offset = new_offset
-        # Persist to svss_engineer.json — loaded and re-applied on next startup
+        # Persist to engineer credentials file — loaded and re-applied on next startup
         try:
             save_calibration_override(key, new_scale, new_offset)
             w["status"].setText("✓ Saved")
@@ -1363,7 +1370,7 @@ class EngineerDialog(QDialog):
             w["status"].setText("✗ Failed — check console")
             w["status"].setStyleSheet(
                 f"color:{DANGER}; font-size:11px; font-weight:700;")
-            print(f"[Engineer] save_calibration_override failed for '{key}': {e}")
+            print(f"[BajaVTD] save_calibration_override failed for '{key}': {e}")
 
     def _change_pw(self):
         old, ok = QInputDialog.getText(
@@ -2178,7 +2185,7 @@ class MainWindow(QMainWindow):
 
         self._all_channels = channels
 
-        # Apply persisted calibration overrides from svss_engineer.json
+        # Apply persisted calibration overrides from engineer credentials file
         # on top of ChannelConfig defaults (which come from config.py at import).
         cal_overrides = load_calibration_overrides()
         for ch in channels:
@@ -2740,6 +2747,7 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
+    app.setOrganizationName("")
     app.setStyleSheet(STYLESHEET)
 
     # Use Fusion style as the base (best for custom stylesheets on Windows)
