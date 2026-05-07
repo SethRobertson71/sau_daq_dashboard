@@ -1,6 +1,6 @@
 # ==============================================================================
 # acquisition.py — Host-Side LJM Sensor Acquisition Backend
-# Vehicle Sensor Suite Dashboard  v2.0.0
+# Baja Vehicle Test Dashboard  v2.0.0
 # ==============================================================================
 #
 # ARCHITECTURE (v2):
@@ -1250,7 +1250,7 @@ class CSVLogger:
             self._frame_count = 0
 
             # Metadata comment header
-            self._file.write(f"# Vehicle Sensor Suite — Data Log\n")
+            self._file.write(f"# Baja Vehicle Test Dashboard \u2014 Data Log\n")
             self._file.write(f"# Mode: {mode.value}\n")
             self._file.write(f"# Date: {datetime.datetime.now().isoformat()}\n")
             for k, v in session_meta.items():

@@ -1,6 +1,6 @@
 # ==============================================================================
 # config.py — Channel Definitions, Hardware Descriptors, Application Config
-# Vehicle Sensor Suite Dashboard  v2.0.0
+# Baja Vehicle Test Dashboard  v2.0.0
 # ==============================================================================
 #
 # ARCHITECTURE CHANGE (v1 → v2):
@@ -242,11 +242,11 @@ FILTER_EMA_ALPHA  = 0.25   # first EMA stage
 FILTER_EMA2_ALPHA = 0.10   # second EMA stage — ADJUST to taste
 
 CSV_DEFAULT_DIR = os.path.join(
-    os.path.expanduser("~"), "Documents", "VehicleTestData"
+    os.path.expanduser("~"), "Documents", "BajaVehicleTestData"
 )
 
-APP_TITLE   = "Vehicle Sensor Suite"
-APP_VERSION = "2.6.2"
+APP_TITLE   = "Baja Vehicle Test Dashboard"
+APP_VERSION = "2.6.3"
 
 
 # ==============================================================================
