@@ -204,6 +204,10 @@ To reset all calibration to defaults:
 
 ---
 
+## Engineer Credentials
+- Contact [Seth Robertson](mailto:sethnrobertson@southern.edu) for default engineer password
+
+
 ## See Also
 
 - [README](./README.md) — Installation, architecture, and hardware reference
